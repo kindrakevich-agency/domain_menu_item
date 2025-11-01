@@ -1,0 +1,169 @@
+<?php
+
+/**
+ * @file
+ * Main module file for Domain Menu Item.
+ */
+
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Routing\RouteMatchInterface;
+
+/**
+ * Implements hook_help().
+ */
+function domain_menu_item_help($route_name, RouteMatchInterface $route_match) {
+  switch ($route_name) {
+    case 'help.page.domain_menu_item':
+      $output = '<h3>' . t('About') . '</h3>';
+      $output .= '<p>' . t('The Domain Menu Item module allows you to associate menu items with specific domains from the Domain module.') . '</p>';
+      $output .= '<h3>' . t('Uses') . '</h3>';
+      $output .= '<dl>';
+      $output .= '<dt>' . t('Managing menu items per domain') . '</dt>';
+      $output .= '<dd>' . t('When editing a menu item, you can select one or more domains where this menu item should appear.') . '</dd>';
+      $output .= '</dl>';
+      return $output;
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for menu_link_content_form.
+ */
+function domain_menu_item_form_menu_link_content_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  $menu_link = $form_state->getFormObject()->getEntity();
+
+  // Load domain storage.
+  $domain_storage = \Drupal::entityTypeManager()->getStorage('domain');
+  $domains = $domain_storage->loadMultipleSorted();
+
+  if (empty($domains)) {
+    return;
+  }
+
+  // Prepare domain options.
+  $options = [];
+  foreach ($domains as $domain) {
+    $options[$domain->id()] = $domain->label();
+  }
+
+  // Load existing domain selections.
+  $default_values = [];
+  if (!$menu_link->isNew()) {
+    $database = \Drupal::database();
+    $query = $database->select('domain_menu_item', 'd')
+      ->fields('d', ['domain_id'])
+      ->condition('menu_link_content_id', $menu_link->id());
+    $results = $query->execute()->fetchCol();
+    $default_values = $results ?: [];
+  }
+
+  // Add domain selection field.
+  $form['domain_selection'] = [
+    '#type' => 'checkboxes',
+    '#title' => t('Show on domains'),
+    '#description' => t('Select the domains where this menu item should appear. Leave empty to show on all domains.'),
+    '#options' => $options,
+    '#default_value' => $default_values,
+    '#weight' => 50,
+  ];
+
+  // Add custom submit handler.
+  $form['actions']['submit']['#submit'][] = 'domain_menu_item_form_submit';
+}
+
+/**
+ * Custom submit handler for menu link content form.
+ */
+function domain_menu_item_form_submit(&$form, FormStateInterface $form_state) {
+  $menu_link = $form_state->getFormObject()->getEntity();
+  $domain_selection = $form_state->getValue('domain_selection');
+
+  if (!$menu_link->id()) {
+    return;
+  }
+
+  $database = \Drupal::database();
+
+  // Delete existing associations.
+  $database->delete('domain_menu_item')
+    ->condition('menu_link_content_id', $menu_link->id())
+    ->execute();
+
+  // Insert new associations.
+  if (!empty($domain_selection)) {
+    foreach ($domain_selection as $domain_id => $selected) {
+      if ($selected) {
+        $database->insert('domain_menu_item')
+          ->fields([
+            'menu_link_content_id' => $menu_link->id(),
+            'domain_id' => $domain_id,
+          ])
+          ->execute();
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_menu_links_discovered_alter().
+ */
+function domain_menu_item_menu_links_discovered_alter(&$links) {
+  // Get the current domain.
+  $domain_negotiator = \Drupal::service('domain.negotiator');
+  $active_domain = $domain_negotiator->getActiveDomain();
+
+  if (!$active_domain) {
+    return;
+  }
+
+  $database = \Drupal::database();
+
+  // Get all menu links that have domain restrictions.
+  $query = $database->select('domain_menu_item', 'd')
+    ->fields('d', ['menu_link_content_id', 'domain_id']);
+  $results = $query->execute()->fetchAll();
+
+  // Group by menu link content id.
+  $domain_restrictions = [];
+  foreach ($results as $row) {
+    $domain_restrictions[$row->menu_link_content_id][] = $row->domain_id;
+  }
+
+  // Filter out menu links that don't belong to the current domain.
+  foreach ($links as $link_id => &$link) {
+    if (strpos($link_id, 'menu_link_content:') === 0) {
+      $uuid = str_replace('menu_link_content:', '', $link_id);
+
+      // Load the menu link content entity to get the numeric ID.
+      $entity = \Drupal::entityTypeManager()
+        ->getStorage('menu_link_content')
+        ->loadByProperties(['uuid' => $uuid]);
+
+      if ($entity) {
+        $entity = reset($entity);
+        $menu_link_id = $entity->id();
+
+        // Check if this menu link has domain restrictions.
+        if (isset($domain_restrictions[$menu_link_id])) {
+          $allowed_domains = $domain_restrictions[$menu_link_id];
+
+          // If current domain is not in the allowed list, hide the link.
+          if (!in_array($active_domain->id(), $allowed_domains)) {
+            unset($links[$link_id]);
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_entity_delete().
+ */
+function domain_menu_item_entity_delete(Drupal\Core\Entity\EntityInterface $entity) {
+  // Clean up domain associations when a menu link is deleted.
+  if ($entity->getEntityTypeId() === 'menu_link_content') {
+    \Drupal::database()->delete('domain_menu_item')
+      ->condition('menu_link_content_id', $entity->id())
+      ->execute();
+  }
+}

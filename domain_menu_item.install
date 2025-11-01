@@ -1,0 +1,49 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the Domain Menu Item module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function domain_menu_item_schema() {
+  $schema['domain_menu_item'] = [
+    'description' => 'Stores domain associations for menu items.',
+    'fields' => [
+      'id' => [
+        'type' => 'serial',
+        'not null' => TRUE,
+        'description' => 'Primary Key: Unique ID.',
+      ],
+      'menu_link_content_id' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'The menu link content entity ID.',
+      ],
+      'domain_id' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'description' => 'The domain ID.',
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes' => [
+      'menu_link_content_id' => ['menu_link_content_id'],
+      'domain_id' => ['domain_id'],
+    ],
+  ];
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function domain_menu_item_uninstall() {
+  // Clean up any configuration or data.
+  \Drupal::database()->schema()->dropTable('domain_menu_item');
+}

@@ -1,0 +1,9 @@
+name: 'Domain Menu Item'
+type: module
+description: 'Allows menu items to be associated with specific domains from the Domain module.'
+core_version_requirement: ^11
+package: 'Domain'
+dependencies:
+  - drupal:system (>=11.0)
+  - domain:domain
+  - drupal:menu_link_content
