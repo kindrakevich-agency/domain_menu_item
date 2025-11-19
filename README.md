@@ -57,6 +57,23 @@ The module creates a `domain_menu_item` table with the following structure:
 - `menu_link_content_id`: Reference to the menu link entity
 - `domain_id`: The domain ID from the Domain module
 
+## Recent Fixes
+
+### v1.1 - Fixed Intermittent Menu Item Disappearing Issue
+
+**Problem**: Menu items were sometimes disappearing intermittently after cache clears.
+
+**Root Cause**: The module was using `hook_menu_links_discovered_alter()` which only runs during menu cache rebuild, not on every page load. This caused:
+- Menu filtering to work correctly immediately after cache clear
+- But filtering to fail on subsequent page loads
+- Intermittent behavior depending on cache state
+
+**Solution**:
+- Replaced `hook_menu_links_discovered_alter()` with `hook_preprocess_menu()` which runs at render time on every page load
+- Added proper cache management with cache tags for better performance
+- Added cache invalidation when domain assignments change
+- Menu filtering now works consistently on every page load
+
 ## Troubleshooting
 
 ### Menu items not appearing/disappearing correctly
