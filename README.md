@@ -46,7 +46,8 @@ The menu item will now only appear on the selected domains.
 
 - **Form Alter**: Adds a domain selection field to the menu link content form
 - **Database Storage**: Stores domain associations in a custom `domain_menu_item` table
-- **Menu Filtering**: Uses `hook_menu_links_discovered_alter()` to filter menu items based on the active domain
+- **Menu Filtering**: Uses `hook_preprocess_menu()` to filter menu items on frontend pages based on the active domain
+- **Admin Access**: Admins see ALL menu items in admin pages - filtering only applies to frontend
 - **Cleanup**: Automatically removes domain associations when menu items are deleted
 
 ## Database Schema
@@ -56,6 +57,24 @@ The module creates a `domain_menu_item` table with the following structure:
 - `id`: Primary key
 - `menu_link_content_id`: Reference to the menu link entity
 - `domain_id`: The domain ID from the Domain module
+
+## Recent Fixes
+
+### v1.1 - Fixed Intermittent Menu Item Disappearing Issue
+
+**Problem**: Menu items were sometimes disappearing intermittently after cache clears.
+
+**Root Cause**: The module was using `hook_menu_links_discovered_alter()` which only runs during menu cache rebuild, not on every page load. This caused:
+- Menu filtering to work correctly immediately after cache clear
+- But filtering to fail on subsequent page loads
+- Intermittent behavior depending on cache state
+
+**Solution**:
+- Replaced `hook_menu_links_discovered_alter()` with `hook_preprocess_menu()` which runs at render time on every page load
+- Added admin route detection to skip filtering on admin pages (admins see all menu items)
+- Added proper cache management with cache tags for better performance
+- Added cache invalidation when domain assignments change
+- Menu filtering now works consistently on every frontend page load
 
 ## Troubleshooting
 

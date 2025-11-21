@@ -101,12 +101,26 @@ function domain_menu_item_form_submit(&$form, FormStateInterface $form_state) {
       }
     }
   }
+
+  // Invalidate the domain menu item cache.
+  \Drupal\Core\Cache\Cache::invalidateTags(['domain_menu_item']);
+
+  // Also invalidate menu cache to ensure changes appear immediately.
+  \Drupal::service('plugin.manager.menu.link')->rebuild();
 }
 
 /**
- * Implements hook_menu_links_discovered_alter().
+ * Implements hook_preprocess_menu().
  */
-function domain_menu_item_menu_links_discovered_alter(&$links) {
+function domain_menu_item_preprocess_menu(&$variables) {
+  // Don't filter menus on admin pages - admins need to see all menu items.
+  $route_match = \Drupal::routeMatch();
+  $is_admin = \Drupal::service('router.admin_context')->isAdminRoute($route_match->getRouteObject());
+
+  if ($is_admin) {
+    return;
+  }
+
   // Get the current domain.
   $domain_negotiator = \Drupal::service('domain.negotiator');
   $active_domain = $domain_negotiator->getActiveDomain();
@@ -115,9 +129,29 @@ function domain_menu_item_menu_links_discovered_alter(&$links) {
     return;
   }
 
-  $database = \Drupal::database();
+  // Get domain restrictions for all menu links (cached).
+  $domain_restrictions = _domain_menu_item_get_restrictions();
 
-  // Get all menu links that have domain restrictions.
+  if (empty($domain_restrictions)) {
+    return;
+  }
+
+  // Filter menu items recursively.
+  _domain_menu_item_filter_items($variables['items'], $domain_restrictions, $active_domain->id());
+}
+
+/**
+ * Helper function to get domain restrictions (with caching).
+ */
+function _domain_menu_item_get_restrictions() {
+  $cid = 'domain_menu_item:restrictions';
+  $cache = \Drupal::cache()->get($cid);
+
+  if ($cache) {
+    return $cache->data;
+  }
+
+  $database = \Drupal::database();
   $query = $database->select('domain_menu_item', 'd')
     ->fields('d', ['menu_link_content_id', 'domain_id']);
   $results = $query->execute()->fetchAll();
@@ -128,29 +162,63 @@ function domain_menu_item_menu_links_discovered_alter(&$links) {
     $domain_restrictions[$row->menu_link_content_id][] = $row->domain_id;
   }
 
-  // Filter out menu links that don't belong to the current domain.
-  foreach ($links as $link_id => &$link) {
-    if (strpos($link_id, 'menu_link_content:') === 0) {
-      $uuid = str_replace('menu_link_content:', '', $link_id);
+  // Cache the restrictions.
+  \Drupal::cache()->set($cid, $domain_restrictions, \Drupal\Core\Cache\Cache::PERMANENT, ['domain_menu_item']);
 
-      // Load the menu link content entity to get the numeric ID.
-      $entity = \Drupal::entityTypeManager()
-        ->getStorage('menu_link_content')
-        ->loadByProperties(['uuid' => $uuid]);
+  return $domain_restrictions;
+}
 
-      if ($entity) {
-        $entity = reset($entity);
-        $menu_link_id = $entity->id();
+/**
+ * Recursively filter menu items based on domain restrictions.
+ */
+function _domain_menu_item_filter_items(&$items, $domain_restrictions, $active_domain_id) {
+  foreach ($items as $key => &$item) {
+    // Check if this is a menu_link_content item.
+    if (isset($item['url']) && $item['url'] instanceof \Drupal\Core\Url) {
+      $route_parameters = $item['url']->getRouteParameters();
 
-        // Check if this menu link has domain restrictions.
-        if (isset($domain_restrictions[$menu_link_id])) {
-          $allowed_domains = $domain_restrictions[$menu_link_id];
-
-          // If current domain is not in the allowed list, hide the link.
-          if (!in_array($active_domain->id(), $allowed_domains)) {
-            unset($links[$link_id]);
+      // Try to get the menu link content entity ID.
+      if (isset($route_parameters['menu_link_content'])) {
+        $menu_link_id = $route_parameters['menu_link_content'];
+      }
+      else {
+        // Try to extract from the original link.
+        $original_link = $item['original_link'] ?? NULL;
+        if ($original_link && method_exists($original_link, 'getPluginId')) {
+          $plugin_id = $original_link->getPluginId();
+          if (strpos($plugin_id, 'menu_link_content:') === 0) {
+            $uuid = str_replace('menu_link_content:', '', $plugin_id);
+            // Load entity to get numeric ID.
+            $entities = \Drupal::entityTypeManager()
+              ->getStorage('menu_link_content')
+              ->loadByProperties(['uuid' => $uuid]);
+            if ($entities) {
+              $entity = reset($entities);
+              $menu_link_id = $entity->id();
+            }
           }
         }
+      }
+
+      // If we have a menu link ID and it has domain restrictions.
+      if (isset($menu_link_id) && isset($domain_restrictions[$menu_link_id])) {
+        $allowed_domains = $domain_restrictions[$menu_link_id];
+
+        // If current domain is not in the allowed list, remove this item.
+        if (!in_array($active_domain_id, $allowed_domains, TRUE)) {
+          unset($items[$key]);
+          continue;
+        }
+      }
+    }
+
+    // Recursively process child items.
+    if (!empty($item['below'])) {
+      _domain_menu_item_filter_items($item['below'], $domain_restrictions, $active_domain_id);
+
+      // If all children were removed, remove the 'below' key.
+      if (empty($item['below'])) {
+        unset($item['below']);
       }
     }
   }
@@ -165,5 +233,8 @@ function domain_menu_item_entity_delete(Drupal\Core\Entity\EntityInterface $enti
     \Drupal::database()->delete('domain_menu_item')
       ->condition('menu_link_content_id', $entity->id())
       ->execute();
+
+    // Invalidate the domain menu item cache.
+    \Drupal\Core\Cache\Cache::invalidateTags(['domain_menu_item']);
   }
 }
